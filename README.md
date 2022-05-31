@@ -13,6 +13,71 @@ This repository aims to deeply explore the mechanism of them by writing many uni
 + tensorflow: `2.8.0`
 + tensorflow-io-gcs-filesystem: `0.24.0`
 
+### Mechanism
+#### PyToTF
+ It contains two important method: 
+    + `get_extra_locals()`: generate `ag__` internally for all converted operations
+    + `transform_ast()`: apply all transformer one by one on ast.
+
+```python
+ class PyToTF(transpiler.PyToPy):
+  """The TensorFlow AutoGraph transformer."""
+
+  def __init__(self):
+    super(PyToTF, self).__init__()
+    self._extra_locals = None
+
+  def get_extra_locals(self):
+    if self._extra_locals is None:
+      # TODO(mdan): Move into core or replace with an actual importable module.
+      # Craft a module that exposes the external API as well as certain
+      # internal modules.
+      module_spec = importlib.machinery.ModuleSpec('autograph', None)
+      ag_internal = importlib.util.module_from_spec(module_spec)
+      ag_internal.__dict__.update(inspect.getmodule(PyToTF).__dict__)
+      ag_internal.ConversionOptions = converter.ConversionOptions
+      ag_internal.STD = converter.STANDARD_OPTIONS
+      ag_internal.Feature = converter.Feature
+      ag_internal.utils = utils
+      ag_internal.FunctionScope = function_wrappers.FunctionScope
+      ag_internal.with_function_scope = function_wrappers.with_function_scope
+      # TODO(mdan): Add safeguards against name clashes.
+      # We don't want to create a submodule because we want the operators to be
+      # accessible as ag__.<operator>
+      ag_internal.__dict__.update(special_functions.__dict__)
+      ag_internal.__dict__.update(operators.__dict__)
+
+      self._extra_locals = {'ag__': ag_internal}
+    return self._extra_locals
+
+
+    def transform_ast(self, node, ctx):
+        unsupported_features_checker.verify(node)
+        node = self.initial_analysis(node, ctx)
+
+        node = functions.transform(node, ctx)
+        node = directives.transform(node, ctx)
+        node = break_statements.transform(node, ctx)
+        if ctx.user.options.uses(converter.Feature.ASSERT_STATEMENTS):
+        node = asserts.transform(node, ctx)
+        # Note: sequencing continue canonicalization before for loop one avoids
+        # dealing with the extra loop increment operation that the for
+        # canonicalization creates.
+        node = continue_statements.transform(node, ctx)
+        node = return_statements.transform(node, ctx)
+        if ctx.user.options.uses(converter.Feature.LISTS):
+        node = lists.transform(node, ctx)
+        node = slices.transform(node, ctx)
+        node = call_trees.transform(node, ctx)
+        node = control_flow.transform(node, ctx)
+        node = conditional_expressions.transform(node, ctx)
+        node = logical_expressions.transform(node, ctx)
+        node = variables.transform(node, ctx)
+        return node
+
+```
+
+
 ## PyTorch
 Torch introduces `@jit.trace` and `@jit.script` for users, which exports models as `jit::ScriptModule` to be easily loaded by libtorch.
 
